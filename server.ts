@@ -1,26 +1,22 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Lazy-loaded Gemini client to avoid failure at startup if key is missing
-let aiClient: GoogleGenAI | null = null;
-const getGeminiClient = () => {
+// Lazy-loaded NVIDIA OpenAI-compatible client
+let aiClient: OpenAI | null = null;
+const getNvidiaClient = () => {
   if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.NVIDIA_API_KEY;
     if (!apiKey) {
-      throw new Error('GEMINI_API_KEY environment variable is required but missing.');
+      throw new Error('NVIDIA_API_KEY environment variable is required but missing.');
     }
-    aiClient = new GoogleGenAI({
+    aiClient = new OpenAI({
       apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        }
-      }
+      baseURL: 'https://integrate.api.nvidia.com/v1',
     });
   }
   return aiClient;
@@ -30,7 +26,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  // Increase body size limit for base64 images
+  app.use(express.json({ limit: '20mb' }));
 
   // API chat endpoint with streaming support
   app.post('/api/chat', async (req, res) => {
@@ -41,43 +38,44 @@ async function startServer() {
          return res.status(400).json({ error: 'Messages array is required.' });
       }
 
-      const ai = getGeminiClient();
+      const client = getNvidiaClient();
 
-      // Extract system instructions from messages if present
-      const systemMsg = messages.find((m: any) => m.role === 'system');
-      const systemInstruction = systemMsg ? systemMsg.content : undefined;
-
-      // Filter out system messages and map the remaining messages
-      // OpenAI 'user' -> 'user', 'assistant' -> 'model'
-      // Support multimodal: if message has images[], include them as inlineData parts
-      const contents = messages
-        .filter((m: any) => m.role !== 'system')
-        .map((m: any) => {
-          const parts: any[] = [];
-          // Add image parts first if present
-          if (m.images && Array.isArray(m.images)) {
-            for (const img of m.images) {
-              parts.push({
-                inlineData: {
-                  mimeType: img.mimeType || 'image/jpeg',
-                  data: img.data, // base64 string without the data:...;base64, prefix
-                }
-              });
-            }
+      // Build OpenAI-compatible messages, with multimodal support
+      const openaiMessages: any[] = messages.map((m: any) => {
+        // If the message has images, use content array format (OpenAI vision)
+        if (m.images && Array.isArray(m.images) && m.images.length > 0) {
+          const contentParts: any[] = [];
+          // Add images first
+          for (const img of m.images) {
+            contentParts.push({
+              type: 'image_url',
+              image_url: {
+                url: `data:${img.mimeType || 'image/jpeg'};base64,${img.data}`,
+              }
+            });
           }
-          // Add text part
+          // Add text
           if (m.content) {
-            parts.push({ text: m.content });
-          }
-          // Ensure at least one part exists
-          if (parts.length === 0) {
-            parts.push({ text: '' });
+            contentParts.push({
+              type: 'text',
+              text: m.content,
+            });
           }
           return {
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts
+            role: m.role,
+            content: contentParts,
           };
-        });
+        }
+        // Standard text message
+        return {
+          role: m.role,
+          content: m.content || '',
+        };
+      });
+
+      // Detect if any message has images to choose appropriate model
+      const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
+      const model = hasImages ? 'google/gemma-3-27b-it' : 'z-ai/glm-5.2';
 
       if (stream) {
         // Set headers for Server-Sent Events (SSE)
@@ -86,19 +84,20 @@ async function startServer() {
         res.setHeader('Connection', 'keep-alive');
 
         try {
-          const responseStream = await ai.models.generateContentStream({
-            model: 'gemini-3.5-flash',
-            contents: contents,
-            config: {
-              systemInstruction: systemInstruction,
-              temperature: temperature,
-              topP: top_p,
-            }
+          const responseStream = await client.chat.completions.create({
+            model: model,
+            messages: openaiMessages,
+            temperature: temperature,
+            top_p: top_p,
+            max_tokens: max_tokens,
+            stream: true,
           });
 
           for await (const chunk of responseStream) {
-            const content = chunk.text || '';
-            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            const content = chunk.choices?.[0]?.delta?.content || '';
+            if (content) {
+              res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
           }
           res.write('data: [DONE]\n\n');
           res.end();
@@ -109,18 +108,17 @@ async function startServer() {
         }
       } else {
         // Non-streaming response fallback
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.5-flash',
-          contents: contents,
-          config: {
-            systemInstruction: systemInstruction,
-            temperature: temperature,
-            topP: top_p,
-          }
+        const response = await client.chat.completions.create({
+          model: model,
+          messages: openaiMessages,
+          temperature: temperature,
+          top_p: top_p,
+          max_tokens: max_tokens,
+          stream: false,
         });
 
         return res.json({
-          content: response.text || '',
+          content: response.choices?.[0]?.message?.content || '',
         });
       }
     } catch (error: any) {
