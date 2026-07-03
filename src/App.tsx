@@ -28,7 +28,8 @@ import {
   Zap,
   BrainCircuit,
   Cpu,
-  Square
+  Square,
+  Camera
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Message, ChatSession, AttachedFile } from './types';
@@ -125,6 +126,7 @@ export default function App() {
   // References
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   // Thinking mode state: fast | thinking | deep
   const [thinkingMode, setThinkingMode] = useState<'fast' | 'thinking' | 'deep'>('thinking');
@@ -326,6 +328,39 @@ export default function App() {
     });
   };
 
+  // Handle paste event to capture images from clipboard
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          imageFiles.push(file);
+        }
+      }
+    }
+    
+    if (imageFiles.length > 0) {
+      e.preventDefault(); // Prevent pasting image as text
+      const dataTransfer = new DataTransfer();
+      imageFiles.forEach(f => dataTransfer.items.add(f));
+      processFiles(dataTransfer.files);
+    }
+  };
+
+  // Handle camera capture (mobile)
+  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processFiles(e.target.files);
+    }
+    // Reset the input so the same file can be captured again
+    e.target.value = '';
+  };
+
   const removeStagedFile = (id: string) => {
     setStagedFiles(prev => prev.filter(f => f.id !== id));
   };
@@ -407,20 +442,34 @@ export default function App() {
     currentMessages.forEach(m => {
       if (m.role === 'user') {
         let finalContent = m.content;
+        const images: { mimeType: string; data: string }[] = [];
+
         if (m.files && m.files.length > 0) {
-          const fileBlocks = m.files.map(f => {
-            if (f.content) {
-              return `[Tài liệu đính kèm: ${f.name} (loại: ${f.type})]\nNội dung tệp:\n\`\`\`\n${f.content}\n\`\`\``;
-            } else if (f.dataUrl) {
-              return `[Hình ảnh đính kèm: ${f.name} (loại: ${f.type})]\n(Ảnh đã được tải lên trực quan trong cuộc hội thoại)`;
+          const textFileBlocks: string[] = [];
+          m.files.forEach(f => {
+            if (f.dataUrl && f.type.startsWith('image/')) {
+              // Extract base64 data from dataUrl (remove "data:image/...;base64," prefix)
+              const base64Data = f.dataUrl.split(',')[1];
+              if (base64Data) {
+                images.push({
+                  mimeType: f.type,
+                  data: base64Data
+                });
+              }
+            } else if (f.content) {
+              textFileBlocks.push(`[Tài liệu đính kèm: ${f.name} (loại: ${f.type})]\nNội dung tệp:\n\`\`\`\n${f.content}\n\`\`\``);
             } else {
-              return `[Tập tin đính kèm: ${f.name} (loại: ${f.type})]`;
+              textFileBlocks.push(`[Tập tin đính kèm: ${f.name} (loại: ${f.type})]`);
             }
-          }).join('\n\n');
+          });
           
-          finalContent = `${fileBlocks}\n\n${m.content ? `Yêu cầu hoặc câu hỏi của tôi về các tệp tin trên:\n${m.content}` : 'Hãy phân tích các tệp tin tôi đã cung cấp ở trên.'}`;
+          if (textFileBlocks.length > 0) {
+            finalContent = `${textFileBlocks.join('\n\n')}\n\n${m.content ? `Yêu cầu hoặc câu hỏi của tôi về các tệp tin trên:\n${m.content}` : 'Hãy phân tích các tệp tin tôi đã cung cấp ở trên.'}`;
+          } else if (images.length > 0 && !m.content) {
+            finalContent = 'Hãy phân tích hình ảnh tôi đã gửi và đưa ra nhận xét chi tiết.';
+          }
         }
-        apiMessages.push({ role: 'user', content: finalContent });
+        apiMessages.push({ role: 'user', content: finalContent, ...(images.length > 0 ? { images } : {}) });
       } else {
         apiMessages.push({ role: m.role, content: m.content });
       }
@@ -1241,9 +1290,29 @@ export default function App() {
                     id="file-upload-input"
                     type="file"
                     multiple
+                    accept="image/*,.txt,.js,.ts,.jsx,.tsx,.py,.java,.cpp,.c,.h,.css,.html,.json,.csv,.xml,.yaml,.yml,.md,.sh,.log"
                     onChange={handleFileChange}
                     className="hidden"
                   />
+
+                  {/* Camera capture button - visible on mobile/tablet */}
+                  <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleCameraCapture}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="w-10 h-10 rounded-xl bg-zinc-800/40 hover:bg-zinc-850 border border-zinc-800 text-zinc-400 hover:text-zinc-200 flex items-center justify-center transition-all cursor-pointer flex-shrink-0 mr-1 hover:border-zinc-700/60 md:hidden"
+                    title="Chụp ảnh bằng camera"
+                    disabled={isGenerating}
+                  >
+                    <Camera className="w-4 h-4" />
+                  </button>
 
                   <textarea
                     ref={textareaRef}
@@ -1251,7 +1320,8 @@ export default function App() {
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder="Hỏi bất cứ điều gì hoặc thả tệp tại đây... (Shift+Enter để xuống dòng)"
+                    onPaste={handlePaste}
+                    placeholder="Hỏi hoặc dán ảnh (Ctrl+V)... (Shift+Enter để xuống dòng)"
                     className="flex-1 max-h-[200px] resize-none bg-transparent border-0 outline-none text-zinc-100 placeholder-zinc-500 text-[15px] py-1.5 pr-2 focus:ring-0 leading-relaxed scrollbar-thin focus:outline-none"
                     disabled={isGenerating}
                   />

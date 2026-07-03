@@ -38,12 +38,35 @@ export default async function handler(req: any, res: any) {
     const systemInstruction = systemMsg ? systemMsg.content : undefined;
 
     // Filter out system messages and map the remaining messages
+    // Support multimodal: if message has images[], include them as inlineData parts
     const contents = messages
       .filter((m: any) => m.role !== 'system')
-      .map((m: any) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content || '' }]
-      }));
+      .map((m: any) => {
+        const parts: any[] = [];
+        // Add image parts first if present
+        if (m.images && Array.isArray(m.images)) {
+          for (const img of m.images) {
+            parts.push({
+              inlineData: {
+                mimeType: img.mimeType || 'image/jpeg',
+                data: img.data, // base64 string without the data:...;base64, prefix
+              }
+            });
+          }
+        }
+        // Add text part
+        if (m.content) {
+          parts.push({ text: m.content });
+        }
+        // Ensure at least one part exists
+        if (parts.length === 0) {
+          parts.push({ text: '' });
+        }
+        return {
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts
+        };
+      });
 
     if (stream) {
       // Set headers for Server-Sent Events (SSE)
