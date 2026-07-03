@@ -15,6 +15,36 @@ const getNvidiaClient = () => {
   return aiClient;
 };
 
+// Use a vision model to describe images, then pass descriptions to GLM-5.2
+async function describeImages(client: OpenAI, images: any[]): Promise<string> {
+  const contentParts: any[] = [];
+  for (const img of images) {
+    contentParts.push({
+      type: 'image_url',
+      image_url: {
+        url: `data:${img.mimeType || 'image/jpeg'};base64,${img.data}`,
+      }
+    });
+  }
+  contentParts.push({
+    type: 'text',
+    text: 'Hãy mô tả chi tiết, đầy đủ và chính xác nhất có thể tất cả nội dung trong hình ảnh này. Nếu có sơ đồ mạch điện, hãy liệt kê tất cả linh kiện, giá trị, kết nối chân. Nếu có code, hãy chép lại toàn bộ code. Nếu có text, hãy chép lại toàn bộ text. Nếu có bảng dữ liệu, hãy liệt kê đầy đủ. Mô tả bằng tiếng Việt.',
+  });
+
+  const response = await client.chat.completions.create({
+    model: 'meta/llama-3.2-90b-vision-instruct',
+    messages: [{
+      role: 'user',
+      content: contentParts,
+    }],
+    temperature: 0.3,
+    max_tokens: 4096,
+    stream: false,
+  });
+
+  return response.choices?.[0]?.message?.content || 'Không thể phân tích hình ảnh.';
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -29,45 +59,30 @@ export default async function handler(req: any, res: any) {
 
     const client = getNvidiaClient();
 
-    // Build OpenAI-compatible messages, with multimodal support
-    const openaiMessages: any[] = messages.map((m: any) => {
-      // If the message has images, use content array format (OpenAI vision)
+    // Pre-process messages: convert images to text descriptions using vision model
+    // then pass everything to GLM-5.2 for intelligent analysis
+    const processedMessages: any[] = [];
+    for (const m of messages) {
       if (m.images && Array.isArray(m.images) && m.images.length > 0) {
-        const contentParts: any[] = [];
-        // Add images first
-        for (const img of m.images) {
-          contentParts.push({
-            type: 'image_url',
-            image_url: {
-              url: `data:${img.mimeType || 'image/jpeg'};base64,${img.data}`,
-            }
-          });
-        }
-        // Add text
-        if (m.content) {
-          contentParts.push({
-            type: 'text',
-            text: m.content,
-          });
-        }
-        return {
+        // Use vision model to describe the images
+        const imageDescription = await describeImages(client, m.images);
+        const enhancedContent = `[PHÂN TÍCH HÌNH ẢNH TỪ NGƯỜI DÙNG]\n${imageDescription}\n\n[YÊU CẦU CỦA NGƯỜI DÙNG]\n${m.content || 'Hãy phân tích hình ảnh trên và đưa ra nhận xét chi tiết.'}`;
+        processedMessages.push({
           role: m.role,
-          content: contentParts,
-        };
+          content: enhancedContent,
+        });
+      } else {
+        processedMessages.push({
+          role: m.role,
+          content: m.content || '',
+        });
       }
-      // Standard text message
-      return {
-        role: m.role,
-        content: m.content || '',
-      };
-    });
+    }
 
-    // Detect if any message has images to choose appropriate model
-    const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
-    const model = hasImages ? 'meta/llama-3.2-90b-vision-instruct' : 'z-ai/glm-5.2';
+    // Always use GLM-5.2 for the final intelligent response
+    const model = 'z-ai/glm-5.2';
 
     if (stream) {
-      // Set headers for Server-Sent Events (SSE)
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
@@ -75,7 +90,7 @@ export default async function handler(req: any, res: any) {
       try {
         const responseStream = await client.chat.completions.create({
           model: model,
-          messages: openaiMessages,
+          messages: processedMessages,
           temperature: temperature,
           top_p: top_p,
           max_tokens: max_tokens,
@@ -96,10 +111,9 @@ export default async function handler(req: any, res: any) {
         res.end();
       }
     } else {
-      // Non-streaming response fallback
       const response = await client.chat.completions.create({
         model: model,
-        messages: openaiMessages,
+        messages: processedMessages,
         temperature: temperature,
         top_p: top_p,
         max_tokens: max_tokens,
