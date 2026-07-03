@@ -1,0 +1,8 @@
+{
+  "name": "AI Chat Secure",
+  "description": "Hệ thống Trợ lý Trí tuệ Nhân tạo thế hệ mới với khả năng lưu trữ và bảo mật cục bộ.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
