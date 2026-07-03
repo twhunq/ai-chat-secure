@@ -75,7 +75,7 @@ async function startServer() {
 
       // Detect if any message has images to choose appropriate model
       const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
-      const model = hasImages ? 'google/gemma-3-27b-it' : 'z-ai/glm-5.2';
+      const model = hasImages ? 'meta/llama-3.2-90b-vision-instruct' : 'z-ai/glm-5.2';
 
       if (stream) {
         // Set headers for Server-Sent Events (SSE)
@@ -99,6 +99,7 @@ async function startServer() {
               res.write(`data: ${JSON.stringify({ content })}\n\n`);
             }
           }
+          // If no content was streamed, send a fallback message
           res.write('data: [DONE]\n\n');
           res.end();
         } catch (streamError: any) {

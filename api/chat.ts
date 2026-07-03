@@ -64,7 +64,7 @@ export default async function handler(req: any, res: any) {
 
     // Detect if any message has images to choose appropriate model
     const hasImages = messages.some((m: any) => m.images && m.images.length > 0);
-    const model = hasImages ? 'google/gemma-3-27b-it' : 'z-ai/glm-5.2';
+    const model = hasImages ? 'meta/llama-3.2-90b-vision-instruct' : 'z-ai/glm-5.2';
 
     if (stream) {
       // Set headers for Server-Sent Events (SSE)
